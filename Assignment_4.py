@@ -181,6 +181,7 @@ def coherence_cv(model):
         texts=texts,
         dictionary=dictionary,
         coherence="c_v",
+        processes=1,  # avoid multiprocessing (Windows spawn needs __main__ guard)
     ).get_coherence()
 
 
@@ -196,8 +197,12 @@ for k in K_RANGE:
     coherence_scores.append((k, score))
     print(f"num_topics = {k:2d}  ->  coherence = {score:.4f}")
 
-best_k = max(coherence_scores, key=lambda x: x[1])[0]
-print(f"\nBest number of topics: {best_k}")
+peak_k, peak_score = max(coherence_scores, key=lambda x: x[1])
+# parsimony rule: smallest k whose coherence is within 2% of the peak.
+# avoids over-splitting one theme into near-duplicate topics on a small corpus.
+best_k = min(k for k, s in coherence_scores if s >= 0.98 * peak_score)
+print(f"\nPeak coherence at k = {peak_k} ({peak_score:.4f})")
+print(f"Selected k = {best_k} (smallest within 2% of peak)")
 
 # ----------------------------------------------------------------------
 # 6. Final LDA model + auto topic labels
@@ -233,6 +238,10 @@ def label_topic(top_terms):
     return best_theme
 
 
+# Several fine-grained LDA topics may map to the same business theme.
+# That is intentional: the dashboard groups tickets by theme, not raw topic id.
+
+
 topic_labels = {}
 print("\n" + "=" * 60)
 print("DISCOVERED LDA TOPICS")
@@ -240,9 +249,6 @@ print("=" * 60)
 for topic_id in range(best_k):
     top_terms = lda_model.show_topic(topic_id, topn=10)
     label = label_topic(top_terms)
-    # de-duplicate labels if two topics map to the same theme
-    if label in topic_labels.values():
-        label = f"{label} ({topic_id})"
     topic_labels[topic_id] = label
     terms_str = ", ".join(f"{t}" for t, _ in top_terms)
     print(f"Topic {topic_id}  [{label}]")
@@ -254,7 +260,8 @@ for topic_id in range(best_k):
 plt.figure(figsize=(7, 4))
 plt.plot([k for k, _ in coherence_scores],
          [s for _, s in coherence_scores], marker="o")
-plt.axvline(best_k, color="red", linestyle="--", label=f"best k = {best_k}")
+plt.axvline(peak_k, color="orange", linestyle=":", label=f"peak k = {peak_k}")
+plt.axvline(best_k, color="red", linestyle="--", label=f"selected k = {best_k}")
 plt.xlabel("Number of Topics")
 plt.ylabel("c_v Coherence Score")
 plt.title("LDA Topic-Count Optimization")
@@ -289,10 +296,16 @@ print(f"Saved {wordcloud_path}")
 # ----------------------------------------------------------------------
 # 7c. Visualization: pyLDAvis interactive HTML
 # ----------------------------------------------------------------------
-vis = pyLDAvis.gensim_models.prepare(lda_model, bow_corpus, dictionary)
 ldavis_path = os.path.join(OUTPUT_DIR, "pyldavis.html")
-pyLDAvis.save_html(vis, ldavis_path)
-print(f"Saved {ldavis_path}")
+try:
+    # mmds avoids the PCoA path that can emit complex values on new numpy/scipy
+    vis = pyLDAvis.gensim_models.prepare(
+        lda_model, bow_corpus, dictionary, mds="mmds"
+    )
+    pyLDAvis.save_html(vis, ldavis_path)
+    print(f"Saved {ldavis_path}")
+except Exception as exc:  # keep the dashboard pipeline running regardless
+    print(f"pyLDAvis skipped ({type(exc).__name__}: {exc})")
 
 # ----------------------------------------------------------------------
 # 8. Assign a dominant topic to every ticket
@@ -369,18 +382,25 @@ print(f"\nSaved {dashboard_path}")
 # 10. Actionable summary for the operations team
 # ----------------------------------------------------------------------
 top_theme = volume.iloc[0]
-latest_week = trend.index.max()
-prev_week = trend.index[-2] if len(trend.index) > 1 else latest_week
-delta = (trend.loc[latest_week] - trend.loc[prev_week]).sort_values(ascending=False)
-rising = delta.index[0]
+
+# ignore partial weeks (trailing/leading) so the trend is not distorted
+week_totals = trend.sum(axis=1)
+full_weeks = trend.loc[week_totals >= 0.5 * week_totals.median()]
 
 print("\n" + "=" * 60)
 print("OPERATIONS SUMMARY")
 print("=" * 60)
 print(f"- Dominant complaint theme: {top_theme['topic']} "
       f"({top_theme['tickets']} tickets, {top_theme['share_%']}% of volume)")
-print(f"- Fastest rising theme in the latest week: {rising} "
-      f"(+{int(delta.iloc[0])} vs previous week)")
+
+if len(full_weeks) >= 2:
+    change = (full_weeks.iloc[-1] - full_weeks.iloc[0]).sort_values(ascending=False)
+    rising = change.index[0]
+    print(f"- Fastest rising theme "
+          f"({full_weeks.index[0].date()} -> {full_weeks.index[-1].date()}): "
+          f"{rising} ({change.iloc[0]:+d} tickets/week)")
+else:
+    print("- Trend: not enough full weeks of history to compute a direction")
 print(f"- Deliverables in ./{OUTPUT_DIR}/ : "
       f"topic_dashboard.png, topic_trends.csv, topic_volume.csv, "
       f"ticket_topic_assignments.csv, topic_wordclouds.png, "
