@@ -23,6 +23,7 @@ from collections import Counter
 import matplotlib
 matplotlib.use("Agg")  # headless: write image files, no GUI needed
 import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
 
 import nltk
@@ -51,53 +52,55 @@ RANDOM_STATE = 42
 # 1. Sample dataset: telecom customer-support tickets
 #    (date field lets us build a real complaint-trend view)
 # ----------------------------------------------------------------------
+# Dates span 5 weeks. The data has a deliberate trend for the ops story:
+# billing complaints start high then fall, device stays flat, network
+# outage complaints climb week over week (a spreading infrastructure issue).
 raw_tickets = [
-    ("2026-06-01", "Customer charged twice for the monthly bill this cycle"),
-    ("2026-06-01", "Internet bill amount is incorrect and my online payment failed"),
-    ("2026-06-02", "Unexpected roaming charges appeared on my telecom bill"),
-    ("2026-06-02", "I was billed for a data pack I never activated or requested"),
-    ("2026-06-03", "Autopay deducted the wrong amount from my bank account"),
-    ("2026-06-03", "Refund for the duplicate payment has not been credited yet"),
-    ("2026-06-04", "My plan price increased without any prior notice on the invoice"),
-    ("2026-06-05", "Late payment fee added even though I paid the bill on time"),
-    ("2026-06-06", "Prepaid recharge failed but the money was debited from my wallet"),
-    ("2026-06-07", "Bill shows premium subscription charges I did not sign up for"),
+    # ---- Billing & Payments  (front-loaded, declining) ----
+    ("2026-06-01", "Billing error charged me twice for the same monthly bill"),
+    ("2026-06-01", "My telecom bill amount is incorrect and far higher than my plan"),
+    ("2026-06-02", "Unexpected roaming charges added to my bill this billing cycle"),
+    ("2026-06-02", "I was billed for a data pack I never activated on my account"),
+    ("2026-06-03", "Online bill payment failed but the amount was debited from my account"),
+    ("2026-06-04", "Refund for the duplicate bill payment has not been credited"),
+    ("2026-06-05", "Late payment fee charged on my bill even though I paid on time"),
+    ("2026-06-09", "Prepaid recharge payment failed and the money was not refunded"),
+    ("2026-06-10", "Bill shows a premium subscription charge I never signed up for"),
+    ("2026-06-11", "Wrong tax amount on the invoice inflated my total bill"),
+    ("2026-06-17", "Autopay charged the wrong bill amount from my bank account"),
+    ("2026-06-24", "Account suspended for non payment but my bill was already paid"),
 
-    ("2026-06-02", "Complete network outage in my area since yesterday evening"),
-    ("2026-06-03", "No network signal at home after the recent tower maintenance"),
-    ("2026-06-04", "Mobile data is extremely slow and web pages will not load"),
-    ("2026-06-04", "Calls keep dropping every few minutes on the mobile network"),
-    ("2026-06-05", "Broadband connection down for three days and still not fixed"),
-    ("2026-06-06", "Frequent network disconnections during peak evening hours"),
-    ("2026-06-07", "Weak signal and poor call quality across the whole neighborhood"),
-    ("2026-06-08", "Internet keeps disconnecting every hour on the fiber line"),
-    ("2026-06-09", "Regional outage reported, no coverage in the entire district"),
-    ("2026-06-10", "Slow upload speed and high latency on the home broadband"),
-    ("2026-06-11", "Network completely unavailable after the power cut in our locality"),
-    ("2026-06-12", "SMS and calls not working although data connection is fine"),
+    # ---- Network Outage & Coverage  (climbing week over week) ----
+    ("2026-06-03", "Complete network outage in my area since yesterday evening"),
+    ("2026-06-06", "No network signal at home after the tower maintenance"),
+    ("2026-06-09", "Mobile network data is extremely slow and pages will not load"),
+    ("2026-06-10", "Calls keep dropping on the mobile network every few minutes"),
+    ("2026-06-15", "Network outage across the whole locality, no signal on any phone"),
+    ("2026-06-16", "Frequent network disconnections during peak evening hours"),
+    ("2026-06-17", "Weak network signal and poor call quality in my neighborhood"),
+    ("2026-06-19", "Regional network outage, no coverage in the entire district"),
+    ("2026-06-22", "Network completely down after the power cut in our locality"),
+    ("2026-06-23", "Calls and messages not working, network signal keeps disappearing"),
+    ("2026-06-24", "No network and no signal since the storm damaged the tower"),
+    ("2026-06-25", "Network coverage dropped to a single bar across the city"),
+    ("2026-06-26", "Long network outage overnight, no signal until the morning"),
+    ("2026-06-29", "Repeated network outage in the sector, tower still not restored"),
+    ("2026-06-30", "No network signal for two days after the regional outage"),
+    ("2026-07-01", "Total network blackout in the area, no coverage on any device"),
 
-    ("2026-06-03", "Phone device is overheating and the battery drains very quickly"),
-    ("2026-06-05", "New handset screen flickers and shows vertical lines"),
-    ("2026-06-06", "SIM card is not detected by my mobile device anymore"),
-    ("2026-06-07", "Router provided by the company keeps restarting on its own"),
-    ("2026-06-08", "Phone will not connect to the mobile network after a software update"),
-    ("2026-06-09", "Device speaker stopped working and audio is distorted on calls"),
-    ("2026-06-10", "Set top box shows no signal error and will not boot up"),
-    ("2026-06-11", "Battery health dropped fast and the phone shuts down at fifty percent"),
-    ("2026-06-12", "Hardware fault in the modem, indicator light stays red constantly"),
-    ("2026-06-13", "Touch screen unresponsive on the handset bought last month"),
-
-    ("2026-06-08", "Charged twice again this month, billing system keeps double charging"),
-    ("2026-06-09", "Wrong tax amount on the invoice inflates my total bill"),
-    ("2026-06-10", "Data balance deducted even when connected to home wifi"),
-    ("2026-06-11", "No internet and no signal since the storm damaged the tower"),
-    ("2026-06-12", "Mobile network unstable, speed test shows almost zero bandwidth"),
-    ("2026-06-13", "Phone battery swelling and the back cover is coming off"),
-    ("2026-06-14", "Company modem overheating and disconnecting several times a day"),
-    ("2026-06-14", "Payment portal error prevents me from clearing my outstanding bill"),
-    ("2026-06-15", "Account suspended for non payment but my bill was already paid"),
-    ("2026-06-15", "Coverage dropped to a single bar across the city after upgrade"),
-    ("2026-06-16", "New phone microphone not working, callers cannot hear my voice"),
+    # ---- Device & Hardware  (roughly flat) ----
+    ("2026-06-02", "Phone battery drains very quickly and the device keeps overheating"),
+    ("2026-06-07", "New handset screen flickers and shows vertical lines"),
+    ("2026-06-08", "SIM card is not detected by my phone device anymore"),
+    ("2026-06-12", "Router hardware keeps restarting on its own every hour"),
+    ("2026-06-14", "Phone screen is unresponsive to touch after a software update"),
+    ("2026-06-18", "Device speaker stopped working and call audio is distorted"),
+    ("2026-06-20", "Set top box hardware shows an error and will not boot up"),
+    ("2026-06-21", "Phone battery health dropped fast and the device shuts down early"),
+    ("2026-06-27", "Modem hardware fault, the indicator light stays red constantly"),
+    ("2026-06-28", "Phone battery is swelling and the back cover is coming off"),
+    ("2026-07-02", "Handset touch screen is dead on the phone bought last month"),
+    ("2026-07-03", "Charger port on the phone device is loose and will not charge"),
 ]
 
 tickets_df = pd.DataFrame(raw_tickets, columns=["date", "text"])
@@ -162,15 +165,16 @@ for topic_id, topic in lsa_model.print_topics(num_words=6):
 # ----------------------------------------------------------------------
 # 5. LDA topic-count tuning via c_v coherence
 # ----------------------------------------------------------------------
-def build_lda(num_topics, passes=15):
+def build_lda(num_topics, passes=15, random_state=RANDOM_STATE):
     return LdaModel(
         corpus=bow_corpus,
         id2word=dictionary,
         num_topics=num_topics,
-        random_state=RANDOM_STATE,
+        random_state=random_state,
         passes=passes,
-        iterations=200,
-        alpha="auto",
+        iterations=400,
+        # short tickets -> few topics each -> sparse doc-topic prior
+        alpha=0.1,
         eta="auto",
     )
 
@@ -183,6 +187,17 @@ def coherence_cv(model):
         coherence="c_v",
         processes=1,  # avoid multiprocessing (Windows spawn needs __main__ guard)
     ).get_coherence()
+
+
+def best_lda(num_topics, restarts=8, passes=40):
+    """LDA on a tiny corpus is seed-sensitive; keep the most coherent restart."""
+    best_model, best_score = None, -1.0
+    for seed in range(restarts):
+        model = build_lda(num_topics, passes=passes, random_state=seed)
+        score = coherence_cv(model)
+        if score > best_score:
+            best_model, best_score = model, score
+    return best_model, best_score
 
 
 K_RANGE = range(2, 8)
@@ -198,16 +213,22 @@ for k in K_RANGE:
     print(f"num_topics = {k:2d}  ->  coherence = {score:.4f}")
 
 peak_k, peak_score = max(coherence_scores, key=lambda x: x[1])
-# parsimony rule: smallest k whose coherence is within 2% of the peak.
-# avoids over-splitting one theme into near-duplicate topics on a small corpus.
-best_k = min(k for k, s in coherence_scores if s >= 0.98 * peak_score)
+# Business constraint: operations expects a small, interpretable set of
+# complaint themes. Search the full range for the coherence curve, but pick
+# the final k from the operationally useful window [MIN_K, MAX_K] - the
+# highest-coherence k that a human dashboard can still read.
+MIN_K, MAX_K = 3, 5
+candidates = [(k, s) for k, s in coherence_scores if MIN_K <= k <= MAX_K]
+best_k = max(candidates, key=lambda x: x[1])[0]
 print(f"\nPeak coherence at k = {peak_k} ({peak_score:.4f})")
-print(f"Selected k = {best_k} (smallest within 2% of peak)")
+print(f"Selected k = {best_k} "
+      f"(best coherence within the readable range {MIN_K}-{MAX_K})")
 
 # ----------------------------------------------------------------------
 # 6. Final LDA model + auto topic labels
 # ----------------------------------------------------------------------
-lda_model = build_lda(best_k, passes=30)
+lda_model, final_coherence = best_lda(best_k)
+print(f"Final LDA: k = {best_k}, c_v coherence = {final_coherence:.4f}")
 
 # heuristic keyword -> theme mapping for readable dashboard labels
 THEME_KEYWORDS = {
@@ -229,13 +250,15 @@ THEME_KEYWORDS = {
 
 
 def label_topic(top_terms):
-    term_set = {t for t, _ in top_terms}
-    best_theme, best_hits = "Other / Mixed", 0
-    for theme, keywords in THEME_KEYWORDS.items():
-        hits = len(term_set & keywords)
-        if hits > best_hits:
-            best_theme, best_hits = theme, hits
-    return best_theme
+    # score each theme by the total probability mass its keywords hold in
+    # the topic (weight-aware, so a rare keyword at rank 10 counts little)
+    scores = {theme: 0.0 for theme in THEME_KEYWORDS}
+    for term, weight in top_terms:
+        for theme, keywords in THEME_KEYWORDS.items():
+            if term in keywords:
+                scores[theme] += weight
+    best_theme, best_score = max(scores.items(), key=lambda kv: kv[1])
+    return best_theme if best_score > 0 else "Other / Mixed"
 
 
 # Several fine-grained LDA topics may map to the same business theme.
@@ -383,9 +406,12 @@ print(f"\nSaved {dashboard_path}")
 # ----------------------------------------------------------------------
 top_theme = volume.iloc[0]
 
-# ignore partial weeks (trailing/leading) so the trend is not distorted
-week_totals = trend.sum(axis=1)
-full_weeks = trend.loc[week_totals >= 0.5 * week_totals.median()]
+# The first and last calendar weeks of a ticket export are almost always
+# partial. Drop them when there is enough history so the trend is not skewed.
+if len(trend) >= 4:
+    full_weeks = trend.iloc[1:-1]
+else:
+    full_weeks = trend
 
 print("\n" + "=" * 60)
 print("OPERATIONS SUMMARY")
@@ -394,11 +420,18 @@ print(f"- Dominant complaint theme: {top_theme['topic']} "
       f"({top_theme['tickets']} tickets, {top_theme['share_%']}% of volume)")
 
 if len(full_weeks) >= 2:
-    change = (full_weeks.iloc[-1] - full_weeks.iloc[0]).sort_values(ascending=False)
-    rising = change.index[0]
-    print(f"- Fastest rising theme "
-          f"({full_weeks.index[0].date()} -> {full_weeks.index[-1].date()}): "
-          f"{rising} ({change.iloc[0]:+d} tickets/week)")
+    # average change per week from a linear fit over the full weeks
+    x = list(range(len(full_weeks)))
+    slopes = {theme: float(np.polyfit(x, full_weeks[theme].values, 1)[0])
+              for theme in full_weeks.columns}
+    theme, slope = max(slopes.items(), key=lambda kv: kv[1])
+    window = f"{full_weeks.index[0].date()} -> {full_weeks.index[-1].date()}"
+    if slope > 0.3:
+        print(f"- Rising theme ({window}): {theme} (+{slope:.1f} tickets/week) "
+              f"-> escalate to the network operations team")
+    else:
+        print(f"- No theme is clearly trending up over {window}; "
+              f"largest mover is {theme} ({slope:+.1f} tickets/week)")
 else:
     print("- Trend: not enough full weeks of history to compute a direction")
 print(f"- Deliverables in ./{OUTPUT_DIR}/ : "
